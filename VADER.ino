@@ -15,7 +15,7 @@ void resetArduino(void);
 /* Private Variables ---------- */
 // NB-IoT Vars
 AIS_NB_BC95 AISnb;
-uint32_t prevMillis = 0;
+uint32_t prevMillis = 0; // used for dutycycle data transmitting
 pingRESP pingResp;
 
 // PMS Vars
@@ -35,10 +35,12 @@ String gpsLng_payload = "";
 
 
 void setup() {
+/* Setup Serial Ports ----------  */
   Serial.begin(VC_BAUD);     // Virtual COM
   Serial1.begin(PMS_BAUD);   // Dust Sensor
   Serial2.begin(GPS_BAUD);   // GPS
 
+#if USE_LCD
 /* Setup LCD -------------------- */
   // initialize the LCD
   lcd.begin();
@@ -46,30 +48,32 @@ void setup() {
   // Turn on the blacklight and print a message.
   lcd.backlight();
   lcd.print("Starting NB-IoT...");
+#endif
 
 /* Setup RTC -------------------- */
   // Start RTC
   Rtc.Begin();
+  RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
+  Rtc.SetDateTime(compiled);
   RtcDateTime now = Rtc.GetDateTime();
 
 /* Setup NB-IoT Shield ---------- */
-  AISnb.debug = true; // Enable debugging
+  AISnb.debug = NBIOT_DEBUG; // Enable debugging
   
   // Keep connecting until connection succeed
   do {
     AISnb.setupDevice(SERVER_PORT);
-      
-    // get device IP
-    String devIP = AISnb.getDeviceIP();
-      
-    // get ping response
-    pingResp = AISnb.pingIP(SERVER_IP);
+    String devIP = AISnb.getDeviceIP(); // get device IP
+    pingResp = AISnb.pingIP(SERVER_IP); // get ping response
   } while(pingResp.rtt == ""); // while ping failed
 
+
+#if USE_LCD
   lcd.clear();
   lcd.print("Completed.");
   delay(1000);
   lcd.clear();
+#endif
 
   prevMillis = millis();
 }
@@ -86,7 +90,7 @@ void loop() {
     // check for NB-IoT connection
     pingResp = AISnb.pingIP(SERVER_IP);
     if (pingResp.rtt != "") {
-      Serial.println("Connected to NB-IoT");
+      if(DEBUG) Serial.println("Connected to NB-IoT");
     } else {
       Serial.println("Connection Failed. Resetting Arduino...");
       delay(1000);
@@ -99,10 +103,13 @@ void loop() {
       gpsLat_payload = String((int32_t)(gps.location.lat()*100000));
       gpsLng_payload = String((int32_t)(gps.location.lng()*100000));
     }
-    
-    Serial.print("Current Time: ");
+
     RtcDateTime now = Rtc.GetDateTime();
-    printDateTime(now);  Serial.println();
+    // prints date/time
+    if (DEBUG) {
+      Serial.print("Current Time: ");
+      printDateTime(now);  Serial.println();
+    }
 
     char timePayload[80] = {0};
     sprintf(timePayload, "%02u/%02u/%04u %02u:%02u:%02u",
@@ -113,21 +120,24 @@ void loop() {
             now.Minute(),
             now.Second());
 
-    String payload = "{\"dev_id:" + String(DEV_ID) + \
+    String payload = "{\"dev_id\":" + String(DEV_ID) + \
                      ",\"type\":\"PM\",\"timestamp\":" + String(timePayload) + \
                      ",\"PM1.0\":" + String(pmsData.PM_AE_UG_1_0) + \
                      ",\"PM2.5\":" + String(pmsData.PM_AE_UG_2_5) + \
                      ",\"PM10.0\":" + String(pmsData.PM_AE_UG_10_0) + \
                      ",\"Lat\":" + gpsLat_payload + \
                      ",\"Lng\":" + gpsLng_payload + "}";
-    
+
+#if USE_LCD
     lcd.clear(); lcd.setCursor(0, 0);
     lcd.print("PM1.0:" + String(pmsData.PM_AE_UG_1_0) + " PM2.5:" + String(pmsData.PM_AE_UG_2_5));
     lcd.setCursor(0, 1);
     lcd.print("PM10.0:" + String(pmsData.PM_AE_UG_10_0));
+#endif
 
-    // transmitting data
+    // transmitting data with given duty Cycle
     if (millis() - prevMillis > DUTYCYCLE) {
+      if (DEBUG) Serial.println("Transmitting Payload to server...");
       prevMillis = millis();
       
       UDPSend udp = AISnb.sendUDPmsgStr(SERVER_IP, SERVER_PORT, payload);

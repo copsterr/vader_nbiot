@@ -1,7 +1,8 @@
 // General Config
-#define DEV_ID  "0001"
-#define DEBUG   0
-#define USE_LCD 0
+#define DEV_ID      "0001"
+#define DEBUG       1
+#define NBIOT_DEBUG 1
+#define USE_LCD     1
 
 // Virtual COM Config
 #define VC_BAUD 115200
