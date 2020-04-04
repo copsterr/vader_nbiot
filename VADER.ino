@@ -4,9 +4,10 @@
 #include "device_config.h"
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
-#include <RtcDS1307.h>
+//#include <RtcDS1307.h>
 #include <TinyGPS++.h>
-
+#include <ThreeWire.h>  
+#include <RtcDS1302.h> // this module uses 3.3V supply
 
 /* Function Prototypes ---------- */
 void (* resetFunc)(void) = 0;
@@ -17,6 +18,7 @@ void resetArduino(void);
 AIS_NB_BC95 AISnb;
 uint32_t prevMillis = 0; // used for dutycycle data transmitting
 pingRESP pingResp;
+uint8_t pingCnt = 0;
 
 // PMS Vars
 PMS pms(Serial1); // init Serial1 for PMS Module
@@ -26,7 +28,9 @@ PMS::DATA pmsData;
 LiquidCrystal_I2C lcd(0x27, 16, 2); // Set the LCD address to 0x27 for a 16 chars and 2 line display
 
 // RTC Vars
-RtcDS1307<TwoWire> Rtc(Wire);
+//RtcDS1307<TwoWire> Rtc(Wire);
+ThreeWire myWire(51,52,53); // IO, SCLK, CE
+RtcDS1302<ThreeWire> Rtc(myWire);
 
 // GPS Vars
 TinyGPSPlus gps;
@@ -53,8 +57,10 @@ void setup() {
 /* Setup RTC -------------------- */
   // Start RTC
   Rtc.Begin();
+#if SET_RTC_TIME
   RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
   Rtc.SetDateTime(compiled);
+#endif
   RtcDateTime now = Rtc.GetDateTime();
 
 /* Setup NB-IoT Shield ---------- */
@@ -86,22 +92,38 @@ void loop() {
  
   // read dust data
   if (pms.read(pmsData)) {
-    
-    // check for NB-IoT connection
-    pingResp = AISnb.pingIP(SERVER_IP);
-    if (pingResp.rtt != "") {
-      if(DEBUG) Serial.println("Connected to NB-IoT");
-    } else {
-      Serial.println("Connection Failed. Resetting Arduino...");
-      delay(1000);
-      resetArduino();
+
+    while (pingCnt < 3) {
+      pingResp = AISnb.pingIP(SERVER_IP);
+      if (pingResp.rtt != "") {
+        if(DEBUG) Serial.println("Connected to NB-IoT");
+        pingCnt = 0;
+        break;
+      }
+      else {
+        if(DEBUG) Serial.println("Failed to ping. Pinging again...");
+        pingCnt++;
+        delay(1000);
+      }
+
+      if (pingCnt == 3) {
+        Serial.println("Connection Failed. Resetting Arduino...");
+        #if USE_LCD
+          lcd.clear(); lcd.setCursor(0, 0);
+          lcd.print("NB-IoT Failed");
+          lcd.setCursor(0, 1);
+          lcd.print("Resetting...");
+        #endif
+        delay(1000);
+        resetArduino();
+      }
     }
 
     // fill up GPS Payload data
     if (gps.location.isValid())
     {
-      gpsLat_payload = String((int32_t)(gps.location.lat()*100000));
-      gpsLng_payload = String((int32_t)(gps.location.lng()*100000));
+      gpsLat_payload = String((int32_t)(gps.location.lat()*10000000));
+      gpsLng_payload = String((int32_t)(gps.location.lng()*10000000));
     }
 
     RtcDateTime now = Rtc.GetDateTime();
@@ -120,19 +142,19 @@ void loop() {
             now.Minute(),
             now.Second());
 
-    String payload = "{\"dev_id\":" + String(DEV_ID) + \
-                     ",\"type\":\"PM\",\"timestamp\":" + String(timePayload) + \
-                     ",\"PM1.0\":" + String(pmsData.PM_AE_UG_1_0) + \
-                     ",\"PM2.5\":" + String(pmsData.PM_AE_UG_2_5) + \
-                     ",\"PM10.0\":" + String(pmsData.PM_AE_UG_10_0) + \
+    String payload = "{\"dev_id\":\"" + String(DEV_ID) + \
+                     "\",\"type\":\"PM\",\"timestamp\":\"" + String(timePayload) + \
+                     "\",\"PM1_0\":" + String(pmsData.PM_AE_UG_1_0) + \
+                     ",\"PM2_5\":" + String(pmsData.PM_AE_UG_2_5) + \
+                     ",\"PM10_0\":" + String(pmsData.PM_AE_UG_10_0) + \
                      ",\"Lat\":" + gpsLat_payload + \
                      ",\"Lng\":" + gpsLng_payload + "}";
 
 #if USE_LCD
     lcd.clear(); lcd.setCursor(0, 0);
-    lcd.print("PM1.0:" + String(pmsData.PM_AE_UG_1_0) + " PM2.5:" + String(pmsData.PM_AE_UG_2_5));
+    lcd.print("PM1:" + String(pmsData.PM_AE_UG_1_0) + " PM2.5:" + String(pmsData.PM_AE_UG_2_5));
     lcd.setCursor(0, 1);
-    lcd.print("PM10.0:" + String(pmsData.PM_AE_UG_10_0));
+    lcd.print("PM10:" + String(pmsData.PM_AE_UG_10_0));
 #endif
 
     // transmitting data with given duty Cycle
